@@ -2,7 +2,7 @@
 The source code for "Monocular 3D displacement measurement framework based on vision foundation model using low-cost camera"
 
 This repository code combines the capabilities of three different vision models to achieve satisfactory monocular 3D displacement measurement
-accuracy without the need for fine-tuning.:
+accuracy without the need for fine-tuning:
 
 1. `sam3_promptmask.py` creates instance masks.
 2. `long_time_track.py` creates RoMa 2D tracks.
@@ -11,6 +11,7 @@ accuracy without the need for fine-tuning.:
 5. `fuse_tracks_3d.py` fuses RoMa, DA3, ArUco scale, and camera intrinsics.
 6. `select_best_3d_keypoints.py` selects stable 3D keypoints.
 7. `visualize_keypoints_3d.py` exports structure-level displacement curves.
+8. `run_vsr.py` super resolution the low-res video to high-res.
 
 ## Coordinate System
 
