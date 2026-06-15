@@ -27,7 +27,7 @@ def choose_uniform_random_points(mask: np.ndarray, num_points: int, seed: int, m
         raise ValueError(f"Mask has only {len(xs)} valid pixels, cannot choose {num_points} points")
 
     rng = np.random.default_rng(seed)
-    num_candidates = min(max_candidates, len(xs))
+    num_candidates = min(max(max_candidates, num_points), len(xs))
     candidate_inds = rng.choice(len(xs), size=num_candidates, replace=False)
     candidates = np.stack((xs[candidate_inds], ys[candidate_inds]), axis=1).astype(np.float32)
 
@@ -288,6 +288,368 @@ def save_per_track_outputs(
         )
 
 
+def moving_average(values: np.ndarray, window: int) -> np.ndarray:
+    if window <= 1 or len(values) < 3:
+        return values.astype(np.float32)
+
+    window = min(window, len(values))
+    if window % 2 == 0:
+        window -= 1
+    if window <= 1:
+        return values.astype(np.float32)
+
+    pad = window // 2
+    padded = np.pad(values.astype(np.float32), (pad, pad), mode="edge")
+    kernel = np.ones(window, dtype=np.float32) / window
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def axis_monotonic_score(
+    values: np.ndarray,
+    valid: np.ndarray,
+    *,
+    smooth_window: int,
+    local_tolerance: float,
+    min_axis_displacement: float,
+) -> tuple[float, float, int, float, float]:
+    use = valid & np.isfinite(values)
+    series = values[use].astype(np.float32)
+    if len(series) < 3:
+        return 0.0, 0.0, 0, 0.0, 1.0
+
+    smooth = moving_average(series, smooth_window)
+    tail = max(1, min(10, len(smooth) // 5))
+    start_value = float(np.median(smooth[:tail]))
+    end_value = float(np.median(smooth[-tail:]))
+    net = end_value - start_value
+    displacement = abs(net)
+    if displacement < min_axis_displacement:
+        return 1.0, 1.0, 0, displacement, 0.0
+
+    direction = 1 if net > 0 else -1
+    signed_diffs = direction * np.diff(smooth)
+    forward = float(np.clip(signed_diffs, 0.0, None).sum())
+    backward = float(np.clip(-signed_diffs, 0.0, None).sum())
+    backward_ratio = backward / max(1e-6, forward + backward)
+    monotonic_score = max(0.0, 1.0 - backward_ratio)
+    consistency = float(np.mean(signed_diffs >= -local_tolerance)) if len(signed_diffs) else 1.0
+    return monotonic_score, consistency, direction, displacement, backward_ratio
+
+
+def evaluate_track_monotonicity(
+    tracks_xy: np.ndarray,
+    valid: np.ndarray,
+    confidence: np.ndarray,
+    *,
+    min_valid_ratio: float,
+    min_monotonic_score: float,
+    min_direction_consistency: float,
+    smooth_window: int,
+    local_tolerance: float,
+    min_axis_displacement: float,
+) -> list[dict[str, float | int | bool]]:
+    results: list[dict[str, float | int | bool]] = []
+    num_frames, num_tracks = valid.shape
+    for track_id in range(num_tracks):
+        track_valid = valid[:, track_id]
+        valid_ratio = float(track_valid.sum() / max(1, num_frames))
+        mean_confidence = float(np.mean(confidence[track_valid, track_id])) if track_valid.any() else 0.0
+
+        x_score, x_consistency, x_direction, x_disp, x_backward = axis_monotonic_score(
+            tracks_xy[:, track_id, 0],
+            track_valid,
+            smooth_window=smooth_window,
+            local_tolerance=local_tolerance,
+            min_axis_displacement=min_axis_displacement,
+        )
+        y_score, y_consistency, y_direction, y_disp, y_backward = axis_monotonic_score(
+            tracks_xy[:, track_id, 1],
+            track_valid,
+            smooth_window=smooth_window,
+            local_tolerance=local_tolerance,
+            min_axis_displacement=min_axis_displacement,
+        )
+
+        is_valid_track = (
+            valid_ratio >= min_valid_ratio
+            and x_score >= min_monotonic_score
+            and y_score >= min_monotonic_score
+            and x_consistency >= min_direction_consistency
+            and y_consistency >= min_direction_consistency
+        )
+        rank_score = (
+            0.45 * ((x_score + y_score) / 2.0)
+            + 0.35 * valid_ratio
+            + 0.20 * min(1.0, mean_confidence)
+        )
+        results.append(
+            {
+                "track_id": track_id,
+                "is_valid": is_valid_track,
+                "rank_score": rank_score,
+                "valid_ratio": valid_ratio,
+                "mean_confidence": mean_confidence,
+                "x_score": x_score,
+                "y_score": y_score,
+                "x_consistency": x_consistency,
+                "y_consistency": y_consistency,
+                "x_direction": x_direction,
+                "y_direction": y_direction,
+                "x_displacement": x_disp,
+                "y_displacement": y_disp,
+                "x_backward_ratio": x_backward,
+                "y_backward_ratio": y_backward,
+            }
+        )
+    return results
+
+
+def save_selected_track_outputs(
+    output_dir: Path,
+    selected_track_ids: list[int],
+    tracks_xy: np.ndarray,
+    valid: np.ndarray,
+    confidence: np.ndarray,
+    source: np.ndarray,
+    frame_ids: np.ndarray,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for track_id in selected_track_ids:
+        track_dir = output_dir / f"point_{track_id:02d}"
+        track_dir.mkdir(parents=True, exist_ok=True)
+        write_track_txt(track_dir / "track.txt", tracks_xy, valid, confidence, source, frame_ids, track_id)
+        color = track_color(track_id)
+        save_curve_png(
+            track_dir / "frame_id_x_curve.png",
+            frame_ids,
+            tracks_xy[:, track_id, 0],
+            valid[:, track_id],
+            title=f"point_{track_id:02d} x coordinate over time",
+            y_label="x pixel",
+            color=color,
+        )
+        save_curve_png(
+            track_dir / "frame_id_y_curve.png",
+            frame_ids,
+            tracks_xy[:, track_id, 1],
+            valid[:, track_id],
+            title=f"point_{track_id:02d} y coordinate over time",
+            y_label="y pixel",
+            color=color,
+        )
+
+
+def write_valid_summary(output_file: Path, results: list[dict[str, float | int | bool]]) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    keys = [
+        "track_id",
+        "is_valid",
+        "rank_score",
+        "valid_ratio",
+        "mean_confidence",
+        "x_score",
+        "y_score",
+        "x_consistency",
+        "y_consistency",
+        "x_direction",
+        "y_direction",
+        "x_displacement",
+        "y_displacement",
+        "x_backward_ratio",
+        "y_backward_ratio",
+    ]
+    with output_file.open("w", encoding="utf-8") as f:
+        f.write(" ".join(keys) + "\n")
+        for item in sorted(results, key=lambda x: int(x["track_id"])):
+            f.write(" ".join(str(item[key]) for key in keys) + "\n")
+
+
+def select_video_track_ids(
+    valid_results: list[dict[str, float | int | bool]],
+    initial_points: np.ndarray,
+    *,
+    top_k: int,
+    image_width: int,
+    image_height: int,
+    min_monotonic_score: float,
+    min_direction_consistency: float,
+    diversity_weight: float,
+    candidate_multiplier: int,
+) -> list[int]:
+    if top_k <= 0:
+        return []
+
+    strict_candidates = [
+        item
+        for item in valid_results
+        if float(item["x_score"]) >= min_monotonic_score
+        and float(item["y_score"]) >= min_monotonic_score
+        and float(item["x_consistency"]) >= min_direction_consistency
+        and float(item["y_consistency"]) >= min_direction_consistency
+    ]
+    strict_candidates.sort(key=lambda item: float(item["rank_score"]), reverse=True)
+
+    if candidate_multiplier > 0:
+        pool_size = max(top_k, top_k * candidate_multiplier)
+        strict_candidates = strict_candidates[:pool_size]
+
+    if len(strict_candidates) <= top_k:
+        return [int(item["track_id"]) for item in strict_candidates]
+
+    track_ids = np.array([int(item["track_id"]) for item in strict_candidates], dtype=np.int32)
+    quality = np.array([float(item["rank_score"]) for item in strict_candidates], dtype=np.float32)
+    quality_span = float(quality.max() - quality.min())
+    if quality_span > 1e-6:
+        quality_norm = (quality - quality.min()) / quality_span
+    else:
+        quality_norm = np.ones_like(quality)
+
+    scale = np.array([max(1, image_width), max(1, image_height)], dtype=np.float32)
+    positions = initial_points[track_ids] / scale
+
+    selected_indices = [int(np.argmax(quality_norm))]
+    remaining = set(range(len(track_ids)))
+    remaining.remove(selected_indices[0])
+    diversity_weight = float(np.clip(diversity_weight, 0.0, 1.0))
+
+    while len(selected_indices) < top_k and remaining:
+        selected_pos = positions[selected_indices]
+        best_idx = None
+        best_score = -np.inf
+        for idx in remaining:
+            min_dist = float(np.linalg.norm(positions[idx][None] - selected_pos, axis=1).min())
+            combined_score = (1.0 - diversity_weight) * float(quality_norm[idx]) + diversity_weight * min_dist
+            if combined_score > best_score:
+                best_score = combined_score
+                best_idx = idx
+        assert best_idx is not None
+        selected_indices.append(best_idx)
+        remaining.remove(best_idx)
+
+    return [int(track_ids[idx]) for idx in selected_indices]
+
+
+def write_video_selection_summary(
+    output_file: Path,
+    selected_track_ids: list[int],
+    results: list[dict[str, float | int | bool]],
+) -> None:
+    result_by_id = {int(item["track_id"]): item for item in results}
+    keys = [
+        "track_id",
+        "rank_score",
+        "valid_ratio",
+        "mean_confidence",
+        "x_score",
+        "y_score",
+        "x_consistency",
+        "y_consistency",
+        "x_backward_ratio",
+        "y_backward_ratio",
+    ]
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("w", encoding="utf-8") as f:
+        f.write(" ".join(keys) + "\n")
+        for track_id in selected_track_ids:
+            item = result_by_id[track_id]
+            f.write(" ".join(str(item[key]) for key in keys) + "\n")
+
+
+def draw_tracks_on_frame(
+    image: Image.Image,
+    frame_idx: int,
+    selected_track_ids: list[int],
+    tracks_xy: np.ndarray,
+    valid: np.ndarray,
+    max_side: int,
+) -> Image.Image:
+    vis = image.convert("RGB")
+    scale = 1.0
+    if max_side > 0 and max(vis.size) > max_side:
+        scale = max_side / max(vis.size)
+        new_size = (int(round(vis.size[0] * scale)), int(round(vis.size[1] * scale)))
+        vis = vis.resize(new_size, Image.Resampling.LANCZOS)
+
+    draw = ImageDraw.Draw(vis)
+    radius = max(4, int(round(max(vis.size) / 260)))
+    for track_id in selected_track_ids:
+        if not valid[frame_idx, track_id]:
+            continue
+        x, y = tracks_xy[frame_idx, track_id]
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+        x *= scale
+        y *= scale
+        color = track_color(track_id)
+        draw.ellipse(
+            [(x - radius, y - radius), (x + radius, y + radius)],
+            fill=color,
+            outline=(255, 255, 255),
+            width=max(1, radius // 3),
+        )
+        draw.text((x + radius + 2, y - radius - 2), str(track_id), fill=(255, 255, 255))
+    return vis
+
+
+def save_valid_video(
+    output_file: Path,
+    image_dir: Path,
+    frame_ids: np.ndarray,
+    selected_track_ids: list[int],
+    tracks_xy: np.ndarray,
+    valid: np.ndarray,
+    *,
+    fps: float,
+    max_side: int,
+    stride: int,
+) -> Path | None:
+    if not selected_track_ids:
+        return None
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import cv2
+
+        first_frame_id = int(frame_ids[0])
+        first_image = Image.open(image_path(image_dir, first_frame_id)).convert("RGB")
+        first_vis = draw_tracks_on_frame(first_image, 0, selected_track_ids, tracks_xy, valid, max_side)
+        first = np.array(first_vis)
+        height, width = first.shape[:2]
+        writer = cv2.VideoWriter(
+            str(output_file),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height),
+        )
+        if not writer.isOpened():
+            raise RuntimeError("cv2.VideoWriter failed to open")
+        writer.write(cv2.cvtColor(first, cv2.COLOR_RGB2BGR))
+        for frame_idx in range(max(1, stride), len(frame_ids), max(1, stride)):
+            frame_id = int(frame_ids[frame_idx])
+            image = Image.open(image_path(image_dir, frame_id)).convert("RGB")
+            frame = draw_tracks_on_frame(image, frame_idx, selected_track_ids, tracks_xy, valid, max_side)
+            writer.write(cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR))
+        writer.release()
+        return output_file
+    except Exception as exc:
+        frames = []
+        for frame_idx in range(0, len(frame_ids), max(1, stride)):
+            frame_id = int(frame_ids[frame_idx])
+            image = Image.open(image_path(image_dir, frame_id)).convert("RGB")
+            frames.append(draw_tracks_on_frame(image, frame_idx, selected_track_ids, tracks_xy, valid, max_side))
+        gif_file = output_file.with_suffix(".gif")
+        duration_ms = int(round(1000.0 / max(1e-6, fps)))
+        frames[0].save(
+            gif_file,
+            save_all=True,
+            append_images=frames[1:],
+            duration=duration_ms,
+            loop=0,
+        )
+        print(f"[WARN] MP4 writing failed ({type(exc).__name__}: {exc}); saved GIF instead: {gif_file}")
+        return gif_file
+
+
 def main() -> None:
     parser = ArgumentParser()
     parser.add_argument("--image_dir", default=DEFAULT_IMAGE_DIR, type=str)
@@ -308,6 +670,20 @@ def main() -> None:
     parser.add_argument("--max_correction_distance", default=80.0, type=float)
     parser.add_argument("--min_overlap", default=0.05, type=float)
     parser.add_argument("--overview_max_side", default=1600, type=int, help="Resize initial point overview image to this max side; <=0 keeps full size")
+    parser.add_argument("--min_valid_ratio", default=0.70, type=float, help="Minimum valid-frame ratio for valid tracks")
+    parser.add_argument("--min_monotonic_score", default=0.88, type=float, help="Minimum overall monotonic score for x and y curves")
+    parser.add_argument("--min_direction_consistency", default=0.80, type=float, help="Minimum fraction of locally monotonic steps after smoothing")
+    parser.add_argument("--monotonic_smooth_window", default=9, type=int, help="Moving-average window used before monotonic filtering")
+    parser.add_argument("--local_tolerance", default=2.0, type=float, help="Pixel tolerance for small local reverse motion")
+    parser.add_argument("--min_axis_displacement", default=5.0, type=float, help="Treat an axis as stable if robust displacement is below this")
+    parser.add_argument("--top_video_points", default=32, type=int)
+    parser.add_argument("--video_min_monotonic_score", default=0.92, type=float, help="Stricter x/y monotonic score required only for video points")
+    parser.add_argument("--video_min_direction_consistency", default=0.88, type=float, help="Stricter x/y local consistency required only for video points")
+    parser.add_argument("--video_diversity_weight", default=0.35, type=float, help="Higher values spread video points more across the first-frame ROI")
+    parser.add_argument("--video_candidate_multiplier", default=8, type=int, help="Diversity selection pool size is top_video_points times this; <=0 uses all strict candidates")
+    parser.add_argument("--video_fps", default=20.0, type=float)
+    parser.add_argument("--video_max_side", default=1280, type=int)
+    parser.add_argument("--video_stride", default=1, type=int, help="Use every Nth frame in the visualization video")
     parser.add_argument("--save_npz", action="store_true", help="Also save complete track arrays as tracks.npz")
     args = parser.parse_args()
 
@@ -435,6 +811,59 @@ def main() -> None:
     save_per_track_outputs(output_dir, tracks_xy, valid, confidence, source, frame_ids)
     print(f"[INFO] Saved per-point track folders under: {output_dir}")
 
+    monotonic_results = evaluate_track_monotonicity(
+        tracks_xy,
+        valid,
+        confidence,
+        min_valid_ratio=args.min_valid_ratio,
+        min_monotonic_score=args.min_monotonic_score,
+        min_direction_consistency=args.min_direction_consistency,
+        smooth_window=args.monotonic_smooth_window,
+        local_tolerance=args.local_tolerance,
+        min_axis_displacement=args.min_axis_displacement,
+    )
+    valid_results = [item for item in monotonic_results if bool(item["is_valid"])]
+    valid_results.sort(key=lambda item: float(item["rank_score"]), reverse=True)
+    valid_track_ids = [int(item["track_id"]) for item in valid_results]
+
+    valid_dir = output_dir / "valid"
+    save_selected_track_outputs(valid_dir, valid_track_ids, tracks_xy, valid, confidence, source, frame_ids)
+    write_valid_summary(valid_dir / "valid_summary.txt", monotonic_results)
+    print(f"[INFO] Valid monotonic tracks: {len(valid_track_ids)}/{args.num_points}")
+    print(f"[INFO] Saved valid track folders and summary under: {valid_dir}")
+
+    video_track_ids = select_video_track_ids(
+        valid_results,
+        tracks_xy[0],
+        top_k=max(0, args.top_video_points),
+        image_width=w,
+        image_height=h,
+        min_monotonic_score=args.video_min_monotonic_score,
+        min_direction_consistency=args.video_min_direction_consistency,
+        diversity_weight=args.video_diversity_weight,
+        candidate_multiplier=args.video_candidate_multiplier,
+    )
+    write_video_selection_summary(valid_dir / "video_selection_summary.txt", video_track_ids, monotonic_results)
+    print(
+        f"[INFO] Video tracks selected after strict x/y monotonic and diversity filtering: "
+        f"{len(video_track_ids)}/{args.top_video_points}"
+    )
+    video_path = save_valid_video(
+        valid_dir / "top_valid_tracks.mp4",
+        image_dir,
+        frame_ids,
+        video_track_ids,
+        tracks_xy,
+        valid,
+        fps=args.video_fps,
+        max_side=args.video_max_side,
+        stride=args.video_stride,
+    )
+    if video_path is not None:
+        print(f"[INFO] Saved valid-track visualization video: {video_path}")
+    else:
+        print("[INFO] No valid tracks available for visualization video.")
+
     if args.save_npz:
         npz_file = output_dir / "tracks.npz"
         np.savez_compressed(
@@ -448,6 +877,8 @@ def main() -> None:
             start_frame=np.array(args.start_frame, dtype=np.int32),
             end_frame=np.array(args.end_frame, dtype=np.int32),
             instance_id=np.array(args.instance_id, dtype=np.int32),
+            monotonic_results=np.array([str(item) for item in monotonic_results]),
+            valid_track_ids=np.array(valid_track_ids, dtype=np.int32),
         )
         print(f"[INFO] Saved track arrays: {npz_file}")
 
