@@ -1,0 +1,1 @@
+Please download the segmentation model Segment Anything 3 from https://github.com/facebookresearch/sam3.git and install it according to the official requirements. Notably, install sam3, not sam3.1, because sam3_maskprompt.py does not work well with sam3.1.

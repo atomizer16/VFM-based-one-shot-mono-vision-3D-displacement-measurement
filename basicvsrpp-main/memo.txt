@@ -1,0 +1,1 @@
+Please download the video super resolution model BasicVsr++ from https://github.com/open-mmlab/mmagic.git and install it according to the official requirements.

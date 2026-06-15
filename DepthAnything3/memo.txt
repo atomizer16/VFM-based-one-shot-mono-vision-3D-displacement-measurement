@@ -1,0 +1,1 @@
+Please download the monocular depth estimation model from https://github.com/ByteDance-Seed/Depth-Anything-3.git and install it according to the official requirements.
