@@ -1,7 +1,7 @@
 # VFM-based one-shot Monocular 3D Displacement Measurement System
 The source code for "Monocular 3D displacement measurement framework based on vision foundation model using low-cost camera"
 
-This repository code combines the capabilities of three different vision models to achieve satisfactory monocular 3D displacement measurement
+This repository code combines the capabilities of three different vision foundation models to achieve satisfactory monocular 3D displacement measurement
 accuracy without the need for fine-tuning:
 
 1. `sam3_promptmask.py` creates instance masks.
