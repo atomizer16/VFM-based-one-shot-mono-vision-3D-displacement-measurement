@@ -40,8 +40,7 @@ python calibrate_camera.py \
 
 ## ArUco Metric Scale
 
-Use the actual ArUco code side length. For your markers this is `0.40 m`, not
-the outer `0.50 m` board size.
+Use the actual ArUco code side length.
 
 ```bash
 python aruco_metric_scale.py \
