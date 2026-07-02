@@ -121,7 +121,7 @@ and exports one color depth PNG per source frame:
 
 ```bash
 python tools/infer_depth_sequence_png.py \
-    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/1024-1024 \
+    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/3072-3072 \
     --output-dir ./output_pod_depth \
     --model-dir depth-anything/DA3-GIANT-1.1 \
     --mode temporal_window \
@@ -177,7 +177,7 @@ aruco2    = 3
 
 ```bash
 python tools/infer_depth_sequence_png.py \
-    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/1024-1024 \
+    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/3072-3072 \
     --mask-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/output/masks/combined_instance \
     --output-dir ./output_pod_depth_masked \
     --model-dir depth-anything/DA3-GIANT-1.1 \
@@ -211,14 +211,6 @@ original input frame size unless `--processed-size-output` is set.
 The color scale is global across all kept mask pixels and all frames, so the
 three target instances share one relative-depth visualization range. This is
 important when comparing beanstalk, `aruco1`, and `aruco2` against each other.
-
-If you explicitly want to remove background context before inference, add
-`--mask-prompt-input`. That writes masked images under
-`output_pod_depth_masked/masked_inputs/` and feeds those masked images to DA3,
-but this is not recommended when the background carries useful depth cues.
-
-DA3 does not expose a native `mask_prompt` argument, so this does not alter the
-model's internal attention implementation directly.
 
 ## ROI Fusion Mode
 
@@ -302,7 +294,7 @@ Run:
 
 ```bash
 python tools/infer_depth_sequence_png.py \
-    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/2048-2048 \
+    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/3072-3072 \
     --mask-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/output/masks/combined_instance \
     --output-dir ./output_pod_depth_beanstalk_crop \
     --model-dir depth-anything/DA3-GIANT-1.1 \
@@ -310,7 +302,7 @@ python tools/infer_depth_sequence_png.py \
     --roi-mode beanstalk_crop_fused \
     --window-size 8 \
     --overlap 4 \
-    --process-res 1008 \
+    --process-res 504 \
     --crop-process-res 1344 \
     --crop-margin 0.6 \
     --fusion-alpha 0.6
