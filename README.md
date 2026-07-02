@@ -81,7 +81,7 @@ The output includes:
 ```bash
 python select_best_3d_keypoints.py \
   --tracks-3d-npz output/fusion/tracks_3d.npz \
-  --top-k 20 \
+  --top-k 100 \
   --output-dir output/selection
 ```
 
@@ -311,7 +311,7 @@ python tools/infer_depth_sequence_png.py \
     --window-size 8 \
     --overlap 4 \
     --process-res 504 \
-    --crop-process-res 756 \
+    --crop-process-res 1344 \
     --crop-margin 0.6 \
     --fusion-alpha 0.6
 ```
@@ -328,12 +328,6 @@ For a 32 GB GPU, start with:
 --window-size 8 --overlap 4 --process-res 504
 ```
 
-If this exceeds available GPU memory, reduce to:
-
-```bash
---window-size 4 --overlap 2 --process-res 392
-```
-
 If memory headroom remains and stronger within-window context is useful, try
-`--window-size 12 --overlap 6`. Do not pass all 1501 frames in one inference
+`--window-size 12 --overlap 6`. Do not pass all frames in one inference
 call; the any-view model performs global attention over the supplied frames.
