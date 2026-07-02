@@ -294,7 +294,7 @@ while `aruco1` and `aruco2` are only smooth reference anchors. It runs:
 6. depth_metrics.csv          # per-frame robust mean depths and differences
 ```
 
-Only the beanstalk is refined with high-resolution crop inference. ArUco regions
+Only the target region is refined with high-resolution crop inference. ArUco regions
 remain from the full-context pass, and their robust mean depths are written to
 `depth_metrics.csv`.
 
@@ -302,7 +302,7 @@ Run:
 
 ```bash
 python tools/infer_depth_sequence_png.py \
-    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/1024-1024 \
+    --input-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/2048-2048 \
     --mask-dir /lustre/home/acct-cwj/cwj-user1/sam3-main/assets/videos/output/masks/combined_instance \
     --output-dir ./output_pod_depth_beanstalk_crop \
     --model-dir depth-anything/DA3-GIANT-1.1 \
@@ -310,7 +310,7 @@ python tools/infer_depth_sequence_png.py \
     --roi-mode beanstalk_crop_fused \
     --window-size 8 \
     --overlap 4 \
-    --process-res 504 \
+    --process-res 1008 \
     --crop-process-res 1344 \
     --crop-margin 0.6 \
     --fusion-alpha 0.6
@@ -322,10 +322,10 @@ improves beanstalk internal structure without harming the anchor relationship.
 
 ## Memory Guidance
 
-For a 32 GB GPU, start with:
+For a 48 GB GPU, start with:
 
 ```bash
---window-size 8 --overlap 4 --process-res 504
+--window-size 8 --overlap 4 --process-res 1008
 ```
 
 If memory headroom remains and stronger within-window context is useful, try
